@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>LensSpeak — Snap & Read Aloud</title>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: #0b0f17; color: #f1f5f9; display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+    header { padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; background: #111827; border-bottom: 1px solid #1f2937; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: 0.3px; }
+    .pill-btn { background: #1f2937; color: #e2e8f0; border: 1px solid #374151; padding: 6px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+    .pill-btn.active { background: #2563eb; border-color: #3b82f6; color: #fff; }
+
+    .viewfinder { position: relative; flex: 1; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    video, img#preview { width: 100%; height: 100%; object-fit: cover; }
+    #preview { display: none; }
+
+    .modes { display: flex; gap: 6px; padding: 8px 12px; overflow-x: auto; background: #111827; border-top: 1px solid #1f2937; }
+    .mode-chip { white-space: nowrap; padding: 6px 12px; border-radius: 999px; font-size: 12px; background: #1f2937; color: #cbd5e1; border: none; cursor: pointer; }
+    .mode-chip.active { background: #3b82f6; color: white; font-weight: 600; }
+
+    .answer-box { background: #111827; padding: 12px 14px; min-height: 88px; max-height: 28dvh; overflow-y: auto; border-top: 1px solid #1f2937; }
+    .status { font-size: 12px; color: #93c5fd; margin-bottom: 4px; font-weight: 600; }
+    .answer-text { font-size: 15px; line-height: 1.45; color: #f8fafc; margin: 0; }
+
+    .controls { display: flex; align-items: center; justify-content: space-around; padding: 12px 16px 18px; background: #0b0f17; }
+    .shutter { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: #3b82f6; cursor: pointer; box-shadow: 0 0 20px rgba(59,130,246,0.5); transition: transform 0.1s; }
+    .shutter:active { transform: scale(0.93); }
+    .shutter:disabled { background: #475569; border-color: #94a3b8; cursor: wait; }
+
+    dialog { background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 14px; width: min(92vw, 400px); padding: 18px; }
+    dialog input, dialog select { width: 100%; padding: 10px; margin: 6px 0 14px; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #fff; }
+    .row { display: flex; gap: 8px; justify-content: flex-end; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LensSpeak</h1>
+    <div style="display:flex; gap:6px;">
+      <button id="voiceToggle" class="pill-btn active">Voice: Gemini AI</button>
+      <button id="settingsBtn" class="pill-btn">Setup Key</button>
+    </div>
+  </header>
+
+  <div class="viewfinder">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="preview" alt="Captured frame" />
+  </div>
+
+  <div class="modes" id="modes">
+    <button class="mode-chip active" data-prompt="Identify what is in this image and explain the key details concisely.">Auto Identify</button>
+    <button class="mode-chip" data-prompt="Read the visible text and summarize the main point clearly.">Read & Summarize</button>
+    <button class="mode-chip" data-prompt="Translate any text in this image into natural English and briefly explain context.">Translate</button>
+    <button class="mode-chip" data-prompt="Solve the problem or question shown in this image and give the final answer clearly.">Solve</button>
+  </div>
+
+  <div class="answer-box">
+    <div class="status" id="status">Point camera and tap the blue button.</div>
+    <p class="answer-text" id="answerText"></p>
+  </div>
+
+  <div class="controls">
+    <label class="pill-btn" style="cursor:pointer;">
+      Upload
+      <input type="file" id="fileInput" accept="image/*" capture="environment" hidden />
+    </label>
+    <button id="shutterBtn" class="shutter" title="Snap & Speak"></button>
+    <button id="stopAudioBtn" class="pill-btn">Stop Audio</button>
+  </div>
+
+  <dialog id="settingsDialog">
+    <h3 style="margin-top:0;">Gemini API Settings</h3>
+    <label style="font-size:13px;">Gemini API Key (stored locally in browser)</label>
+    <input type="password" id="apiKeyInput" placeholder="AIza..." />
+    <label style="font-size:13px;">Gemini TTS Voice</label>
+    <select id="voiceSelect">
+      <option value="Kore">Kore (Clear / Neutral)</option>
+      <option value="Puck">Puck (Upbeat)</option>
+      <option value="Fenrir">Fenrir (Deep)</option>
+      <option value="Aoede">Aoede (Warm)</option>
+    </select>
+    <div class="row">
+      <button id="closeSettings" class="pill-btn">Cancel</button>
+      <button id="saveSettings" class="pill-btn active">Save</button>
+    </div>
+  </dialog>
+
+  <canvas id="canvas" hidden></canvas>
+
+  <script>
+    const video = document.getElementById("video");
+    const preview = document.getElementById("preview");
+    const canvas = document.getElementById("canvas");
+    const shutterBtn = document.getElementById("shutterBtn");
+    const stopAudioBtn = document.getElementById("stopAudioBtn");
+    const fileInput = document.getElementById("fileInput");
+    const statusEl = document.getElementById("status");
+    const answerEl = document.getElementById("answerText");
+    const voiceToggle = document.getElementById("voiceToggle");
+    const settingsDialog = document.getElementById("settingsDialog");
+    const apiKeyInput = document.getElementById("apiKeyInput");
+    const voiceSelect = document.getElementById("voiceSelect");
+
+    let activePrompt = document.querySelector(".mode-chip.active").dataset.prompt;
+    let useGeminiVoice = true;
+    let audioCtx = null;
+    let currentSource = null;
+
+    // Load saved settings
+    apiKeyInput.value = localStorage.getItem("gemini_api_key") || "";
+    voiceSelect.value = localStorage.getItem("gemini_voice") || "Kore";
+
+    // Start rear camera
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
+          audio: false
+        });
+        video.srcObject = stream;
+      } catch {
+        statusEl.textContent = "Camera blocked/unavailable — use 'Upload' or open over HTTPS.";
+      }
+    }
+    startCamera();
+
+    // Unlock mobile audio inside user gesture so auto-read-aloud isn't blocked
+    function unlockAudio() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      window.speechSynthesis.cancel();
+    }
+
+    function stopAllAudio() {
+      if (currentSource) { try { currentSource.stop(); } catch {} currentSource = null; }
+      window.speechSynthesis.cancel();
+    }
+
+    // Mode selector
+    document.getElementById("modes").addEventListener("click", (e) => {
+      if (!e.target.classList.contains("mode-chip")) return;
+      document.querySelectorAll(".mode-chip").forEach(c => c.classList.remove("active"));
+      e.target.classList.add("active");
+      activePrompt = e.target.dataset.prompt;
+    });
+
+    voiceToggle.addEventListener("click", () => {
+      useGeminiVoice = !useGeminiVoice;
+      voiceToggle.textContent = useGeminiVoice ? "Voice: Gemini AI" : "Voice: Instant Device";
+      voiceToggle.classList.toggle("active", useGeminiVoice);
+    });
+
+    document.getElementById("settingsBtn").onclick = () => settingsDialog.showModal();
+    document.getElementById("closeSettings").onclick = () => settingsDialog.close();
+    document.getElementById("saveSettings").onclick = () => {
+      localStorage.setItem("gemini_api_key", apiKeyInput.value.trim());
+      localStorage.setItem("gemini_voice", voiceSelect.value);
+      settingsDialog.close();
+    };
+    stopAudioBtn.onclick = stopAllAudio;
+
+    // 1. Analyze image with Gemini Vision + Google Search grounding (Lens-style)
+    async function analyzeImage(base64Jpeg, apiKey) {
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+      const makeBody = (withSearch) => ({
+        systemInstruction: {
+          parts: [{
+            text: "You are a visual assistant combining Google Lens and Gemini. Give a direct, accurate answer in 1 to 3 short spoken sentences. Plain text only—no markdown, asterisks, or bullet lists."
+          }]
+        },
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: base64Jpeg } },
+            { text: activePrompt }
+          ]
+        }],
+        ...(withSearch ? { tools: [{ google_search: {} }] } : {})
+      });
+
+      let res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify(makeBody(true))
+      });
+
+      // Fallback without search grounding if unsupported on key
+      if (!res.ok && res.status === 400) {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify(makeBody(false))
+        });
+      }
+
+      if (!res.ok) throw new Error(`Vision API error (${res.status})`);
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join(" ").trim()
+        || "I couldn't identify anything clearly.";
+    }
+
+    // 2. Speak answer automatically using Gemini TTS (with instant device fallback)
+    async function speakAutomatically(text, apiKey) {
+      stopAllAudio();
+      if (!useGeminiVoice) {
+        speakDevice(text);
+        return;
+      }
+
+      statusEl.textContent = "Generating Gemini voice...";
+      try {
+        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify({
+            model: "gemini-3.8-flash-lite-tts",
+            input: [{
+              type: "user_input",
+              content: [{
+                type: "text",
+                text,
+                annotations: [{ type: "speech_metadata", style: "clear, concise, and helpful" }]
+              }]
+            }],
+            response_format: { type: "audio" },
+            generation_config: { speech_config: [{ voice: voiceSelect.value }] }
+          })
+        });
+
+        if (!res.ok) throw new Error("TTS API error");
+        const data = await res.json();
+        const b64 = data.output_audio?.data || data.outputs?.find(o => o.type === "audio")?.data;
+        if (!b64) throw new Error("No audio data");
+
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer);
+        currentSource = audioCtx.createBufferSource();
+        currentSource.buffer = audioBuffer;
+        currentSource.connect(audioCtx.destination);
+        statusEl.textContent = "Speaking (Gemini TTS)...";
+        currentSource.onended = () => { statusEl.textContent = "Done. Tap shutter for next photo."; };
+        currentSource.start(0);
+      } catch {
+        // Automatic fallback to built-in device TTS
+        speakDevice(text);
+      }
+    }
+
+    function speakDevice(text) {
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      statusEl.textContent = "Speaking (Device TTS)...";
+      u.onend = () => { statusEl.textContent = "Done. Tap shutter for next photo."; };
+      window.speechSynthesis.speak(u);
+    }
+
+    async function processBase64Image(base64Jpeg, dataUrl) {
+      const apiKey = localStorage.getItem("gemini_api_key");
+      if (!apiKey) {
+        settingsDialog.showModal();
+        return;
+      }
+
+      shutterBtn.disabled = true;
+      preview.src = dataUrl;
+      preview.style.display = "block";
+      video.style.display = "none";
+      answerEl.textContent = "";
+      statusEl.textContent = "Analyzing image (Lens + Gemini)...";
+
+      try {
+        const reply = await analyzeImage(base64Jpeg, apiKey);
+        answerEl.textContent = reply;
+        await speakAutomatically(reply, apiKey);
+      } catch (err) {
+        statusEl.textContent = "Error: " + err.message;
+      } finally {
+        shutterBtn.disabled = false;
+        setTimeout(() => {
+          preview.style.display = "none";
+          video.style.display = "block";
+        }, 2500);
+      }
+    }
+
+    // Snap from live camera
+    shutterBtn.addEventListener("click", async () => {
+      unlockAudio();
+      if (!video.videoWidth) { fileInput.click(); return; }
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d").drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+      await processBase64Image(dataUrl.split(",")[1], dataUrl);
+    });
+
+    // Or snap via native camera upload
+    fileInput.addEventListener("change", (e) => {
+      unlockAudio();
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => processBase64Image(reader.result.split(",")[1], reader.result);
+      reader.readAsDataURL(file);
+    });
+  </script>
+</body>
+</html>
